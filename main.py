@@ -12,7 +12,7 @@ from utils.logger import logger
 
 
 async def main():
-    logger.info("🚀 Starting OLX Bot...")
+    logger.info("🚀 Starting OLX Bot v2.0 (Production)...")
 
     # Init DB
     await init_db()
@@ -42,6 +42,7 @@ async def main():
     )
     scheduler.start()
     logger.info(f"⏱ Monitor scheduler started (interval: {settings.PARSE_INTERVAL_SECONDS}s)")
+    logger.info("✅ Bot is ready to receive messages!")
 
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
