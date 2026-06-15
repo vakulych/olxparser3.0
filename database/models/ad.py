@@ -1,10 +1,11 @@
-from sqlalchemy import String, Float, Integer, Text, BigInteger, Boolean
+from sqlalchemy import String, Float, Integer, Text, Boolean
 from sqlalchemy.orm import Mapped, mapped_column
 from datetime import datetime
 from .base import Base
 
 
 class Ad(Base):
+    """Глобальная таблица найденных товаров (не привязана к пользователям)."""
     __tablename__ = "ads"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -18,13 +19,11 @@ class Ad(Base):
     city: Mapped[str | None] = mapped_column(String(128), nullable=True)
     photo_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
-    # Seller info
     seller_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
     seller_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     seller_created: Mapped[str | None] = mapped_column(String(64), nullable=True)
     seller_ads_count: Mapped[int] = mapped_column(Integer, default=0)
 
-    # Analytics
     market_price: Mapped[float] = mapped_column(Float, default=0.0)
     profit: Mapped[float] = mapped_column(Float, default=0.0)
     roi: Mapped[float] = mapped_column(Float, default=0.0)

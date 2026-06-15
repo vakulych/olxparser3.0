@@ -1,32 +1,14 @@
 import logging
-import sys
-from pathlib import Path
 from config.settings import settings
 
-LOG_DIR = Path("logs")
-LOG_DIR.mkdir(exist_ok=True)
+# Налаштування логування
+logging.basicConfig(
+    level=settings.LOG_LEVEL,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("logs/bot.log"),
+    ]
+)
 
-
-def setup_logger(name: str) -> logging.Logger:
-    logger = logging.getLogger(name)
-    logger.setLevel(getattr(logging, settings.LOG_LEVEL, logging.INFO))
-
-    formatter = logging.Formatter(
-        "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
-    # Console handler
-    ch = logging.StreamHandler(sys.stdout)
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
-
-    # File handler
-    fh = logging.FileHandler(LOG_DIR / "bot.log", encoding="utf-8")
-    fh.setFormatter(formatter)
-    logger.addHandler(fh)
-
-    return logger
-
-
-logger = setup_logger("olx_bot")
+logger = logging.getLogger(__name__)
