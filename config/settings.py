@@ -22,8 +22,7 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://redis:6379/0"
     PROXIES: Optional[str] = None
 
-    # 30 секунд — оптимально: OLX модерирует объявления ~1-3 мин,
-    # частота 30с гарантирует что поймаем сразу после публикации
+    # 30 секунд — оптимально для миттєвої відправки
     PARSE_INTERVAL_SECONDS: int = 30
     MIN_FLIP_SCORE: int = 60
 

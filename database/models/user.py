@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, String, Boolean, Integer, Float
+from sqlalchemy import BigInteger, String, Boolean, Integer, Float, DateTime
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
 from .base import Base
@@ -10,8 +10,12 @@ class User(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)  # Telegram user ID
     username: Mapped[str | None] = mapped_column(String(64), nullable=True)
     full_name: Mapped[str] = mapped_column(String(256), default="")
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    
+    # ACCESS CONTROL: новая система
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False)  # Default False - блокировка
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    access_granted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # Когда дан доступ
+    access_denied_reason: Mapped[str] = mapped_column(String(256), default="")  # Причина блокировки
 
     # User filter preferences
     min_profit: Mapped[float] = mapped_column(Float, default=0.0)
@@ -26,3 +30,4 @@ class User(Base):
 
     searches: Mapped[list["Search"]] = relationship("Search", back_populates="user", cascade="all, delete-orphan")
     favorites: Mapped[list["Favorite"]] = relationship("Favorite", back_populates="user", cascade="all, delete-orphan")
+    ads_sent: Mapped[list["AdSent"]] = relationship("AdSent", back_populates="user", cascade="all, delete-orphan")
