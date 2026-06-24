@@ -1,41 +1,51 @@
-version: "3.9"
+version: '3.8'
 
 services:
-  bot:
-    build: .
-    restart: unless-stopped
-    env_file: .env
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    volumes:
-      - ./logs:/app/logs
-
   db:
-    image: postgres:16-alpine
-    restart: unless-stopped
+    image: postgres:15-alpine
     environment:
       POSTGRES_USER: olxbot
       POSTGRES_PASSWORD: olxpass
-      POSTGRES_DB: olx_bot
+      POSTGRES_DB: olxbot
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U olxbot"]
-      interval: 5s
+      interval: 10s
       timeout: 5s
       retries: 5
 
   redis:
     image: redis:7-alpine
-    restart: unless-stopped
+    ports:
+      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
+      interval: 10s
+      timeout: 5s
       retries: 5
 
+  bot:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      ADMIN_IDS: ${ADMIN_IDS}
+      DATABASE_URL: postgresql+asyncpg://olxbot:olxpass@db:5432/olxbot
+      REDIS_URL: redis://redis:6379/0
+      PROXIES: ${PROXIES}
+      PARSE_INTERVAL_SECONDS: ${PARSE_INTERVAL_SECONDS:-30}
+      MIN_FLIP_SCORE: ${MIN_FLIP_SCORE:-60}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+
 volumes:
-  pgdata:
+  postgres_data:

@@ -2,10 +2,11 @@ import csv
 import json
 import io
 from openpyxl import Workbook
-from database.models.ad import Ad
+from database.models.ad_sent import AdSent
 
 
-def export_to_csv(ads: list[Ad]) -> bytes:
+def export_to_csv(ads: list[AdSent]) -> bytes:
+    """Экспорт в CSV (только товары пользователя)."""
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([
@@ -21,7 +22,8 @@ def export_to_csv(ads: list[Ad]) -> bytes:
     return output.getvalue().encode("utf-8-sig")
 
 
-def export_to_excel(ads: list[Ad]) -> bytes:
+def export_to_excel(ads: list[AdSent]) -> bytes:
+    """Экспорт в Excel (только товары пользователя)."""
     wb = Workbook()
     ws = wb.active
     ws.title = "OLX Deals"
@@ -41,7 +43,8 @@ def export_to_excel(ads: list[Ad]) -> bytes:
     return output.getvalue()
 
 
-def export_to_json(ads: list[Ad]) -> bytes:
+def export_to_json(ads: list[AdSent]) -> bytes:
+    """Экспорт в JSON (только товары пользователя)."""
     data = [
         {
             "id": ad.olx_id, "title": ad.title, "price": ad.price,

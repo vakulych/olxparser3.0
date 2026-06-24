@@ -1,28 +1,32 @@
 """
-Monitor service — фоновый мониторинг OLX.
+Monitor service v2 — с фильтрацией по пользователям и поддержкой фото.
 
-Ключевые улучшения v2:
-- Нет задержек между запросами (антибан теперь только на уровне парсера)
-- Умная фильтрация релевантности (чехлы/стекла отсеиваются)
-- Sanity-check цены (125 грн за iPhone = мусор)
-- Фильтр города per-search
-- Правильный расчёт рыночной цены (только от релевантных объявлений)
+Ключевые улучшения:
+- Каждый товар отправляется ТОЛЬКО своему пользователю
+- Фотография отправляется вместе с товаром
+- Миттєва отправка - как только товар проанализирован
+- Реальная рыночная цена (не пустышка)
+- Проверка доступа пользователя
 """
 from __future__ import annotations
 
 import asyncio
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
+from aiogram.types import InputFile
 from sqlalchemy.ext.asyncio import AsyncSession
+import aiohttp
 
 from parsers.olx_parser import OLXParser, OLXListing
 from services.analytics import AnalyticsService
 from services.relevance import check_relevance, is_price_realistic
 from database.engine import AsyncSessionFactory
 from database.models.ad import Ad
+from database.models.ad_sent import AdSent
 from database.repositories.user_repo import UserRepository
 from database.repositories.search_repo import SearchRepository
 from database.repositories.ad_repo import AdRepository
+from database.repositories.ad_sent_repo import AdSentRepository
 from config.settings import settings
 from utils.logger import logger
 
@@ -114,30 +118,33 @@ class MonitorService:
             search_repo = SearchRepository(session)
             user_repo = UserRepository(session)
             ad_repo = AdRepository(session)
+            ad_sent_repo = AdSentRepository(session)
 
             searches = await search_repo.get_all_active()
             if not searches:
                 return
 
-            # Группируем по keyword, но сохраняем city_filter каждого пользователя
-            # keyword -> list of (user_id, city_filter)
+            # Группируем по keyword, но сохраняем user_id, city_filter каждого пользователя
             keyword_map: dict[str, list[tuple[int, str | None]]] = {}
             for s in searches:
                 kw = s.keyword.strip().lower()
                 keyword_map.setdefault(kw, []).append((s.user_id, s.city_filter))
 
             tasks = [
-                self._process_keyword(kw, subscribers, ad_repo, user_repo, kw)
+                self._process_keyword(kw, subscribers, ad_repo, ad_sent_repo, user_repo, kw)
                 for kw, subscribers in keyword_map.items()
             ]
-            # Запускаем все ключевые слова параллельно (парсер сам регулирует частоту)
             await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Commit в конце цикла
+            await session.commit()
 
     async def _process_keyword(
         self,
         keyword: str,
         subscribers: list[tuple[int, str | None]],
         ad_repo: AdRepository,
+        ad_sent_repo: AdSentRepository,
         user_repo: UserRepository,
         original_keyword: str,
     ) -> None:
@@ -168,25 +175,23 @@ class MonitorService:
 
             if not relevance.is_relevant:
                 logger.debug(f"SKIP [{listing.olx_id}] '{listing.title[:50]}' — {relevance.reason}")
-                # Сохраняем в БД но НЕ отправляем
                 await self._save_ad(ad_repo, listing, keyword, 0, 0, 0, 0, "irrelevant", skip=True)
                 continue
 
             # ── Расчёт рыночной цены ──────────────────────────────────────────
             market_price = await self.analytics.get_market_price(keyword, db_prices)
 
-            # Sanity check: если рынок посчитался от мусора — он будет аномален
+            # Sanity check
             price_ok, price_reason = is_price_realistic(listing.price, keyword, market_price)
             if not price_ok:
                 logger.debug(f"SKIP [{listing.olx_id}] '{listing.title[:50]}' — {price_reason}")
                 await self._save_ad(ad_repo, listing, keyword, 0, 0, 0, 0, "bad_price", skip=True)
                 continue
 
-            # Если рыночных данных нет — не гадаем, не отправляем фейковый ROI
+            # Если рыночных данных нет — не отправляем
             if market_price <= 0:
-                # Первые объявления накапливаем без уведомлений
                 await self._save_ad(ad_repo, listing, keyword, 0, 0, 0, 30, "accumulating")
-                db_prices.append(listing.price)  # добавляем в локальный пул
+                db_prices.append(listing.price)
                 continue
 
             profit = self.analytics.calculate_profit(listing.price, market_price)
@@ -216,9 +221,17 @@ class MonitorService:
                 search_keyword=original_keyword,
             )
 
+            # ── КРИТИЧНО: Отправляем каждому подписчику ОТДЕЛЬНО ───────────────
             for user_id, city_filter in subscribers:
                 user = await user_repo.get(user_id)
+                
+                # ✅ Проверка доступа
                 if not user or not user.is_active:
+                    logger.debug(f"SKIP user {user_id} — доступ не предоставлен")
+                    continue
+
+                # ── Проверка что уже отправили этому пользователю ──
+                if await ad_sent_repo.exists_for_user(user_id, listing.olx_id):
                     continue
 
                 # ── Фильтры пользователя ──────────────────────────────────────
@@ -229,7 +242,7 @@ class MonitorService:
                 if listing.price > user.max_price:
                     continue
 
-                # Фильтр города: сначала per-search, потом глобальный
+                # Фильтр города
                 effective_city = city_filter or user.city_filter
                 if effective_city and listing.city:
                     if effective_city.lower() not in listing.city.lower():
@@ -240,6 +253,7 @@ class MonitorService:
                 if any(w in listing.title.lower() for w in bl_words):
                     continue
 
+                # Черный список продавцов
                 bl_sellers = [s.strip().lower() for s in user.seller_blacklist.split(",") if s.strip()]
                 if listing.seller_name and listing.seller_name.lower() in bl_sellers:
                     continue
@@ -248,7 +262,32 @@ class MonitorService:
                 if seller_status == "scammer":
                     continue
 
-                await self._send(user_id, message)
+                # ── ОТПРАВЛЯЕМ С ФОТО ───────────────────────────────────────────
+                await self._send_with_photo(user_id, message, listing.photo_url)
+                
+                # ── СОХРАНЯЕМ ЧТО ОТПРАВИЛИ ─────────────────────────────────────
+                ad_sent = AdSent(
+                    user_id=user_id,
+                    olx_id=listing.olx_id,
+                    title=listing.title,
+                    description=listing.description[:500] if listing.description else "",
+                    price=listing.price,
+                    currency=listing.currency,
+                    url=listing.url,
+                    city=listing.city,
+                    photo_url=listing.photo_url,
+                    seller_name=listing.seller_name,
+                    seller_id=listing.seller_id,
+                    seller_created=listing.seller_created,
+                    market_price=market_price,
+                    profit=profit,
+                    roi=roi,
+                    flip_score=flip_score,
+                    seller_status=seller_status,
+                    keyword=keyword,
+                )
+                await ad_sent_repo.save(ad_sent)
+                logger.info(f"✅ Sent to user {user_id}: {listing.title[:50]}")
 
     async def _save_ad(
         self, repo: AdRepository, listing: OLXListing, keyword: str,
@@ -280,9 +319,34 @@ class MonitorService:
         except Exception as e:
             logger.error(f"Save ad error: {e}")
 
-    async def _send(self, user_id: int, text: str) -> None:
+    async def _send_with_photo(self, user_id: int, text: str, photo_url: str | None) -> None:
+        """Отправить сообщение с фотографией товара."""
         try:
-            await self.bot.send_message(chat_id=user_id, text=text, parse_mode="HTML", disable_web_page_preview=True)
+            if photo_url:
+                try:
+                    # Пытаемся отправить фото с текстом
+                    await self.bot.send_photo(
+                        chat_id=user_id,
+                        photo=photo_url,
+                        caption=text,
+                        parse_mode="HTML",
+                    )
+                    logger.debug(f"Photo sent to {user_id}")
+                except Exception as photo_error:
+                    logger.warning(f"Photo send failed for {user_id}: {photo_error}, sending text only")
+                    await self.bot.send_message(
+                        chat_id=user_id,
+                        text=text,
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                    )
+            else:
+                await self.bot.send_message(
+                    chat_id=user_id,
+                    text=text,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
         except TelegramForbiddenError:
             logger.warning(f"User {user_id} blocked the bot")
         except TelegramBadRequest as e:

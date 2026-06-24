@@ -1,8 +1,3 @@
-from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy import func
-from sqlalchemy.orm import mapped_column, Mapped
-from datetime import datetime
+from sqlalchemy.orm import declarative_base
 
-
-class Base(DeclarativeBase):
-    pass
+Base = declarative_base()

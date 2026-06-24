@@ -1,81 +1,126 @@
 from aiogram import Router, F
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
 
+from database.repositories.user_repo import UserRepository
 from config.settings import settings
-from database.models.user import User
-from database.repositories.ad_repo import AdRepository
-from bot.keyboards import main_menu_kb
 from utils.logger import logger
 
 router = Router()
 
 
-def is_admin(user_id: int) -> bool:
-    return user_id in settings.ADMIN_IDS
-
-
-@router.message(Command("admin"))
-async def cmd_admin(message: Message):
-    if not is_admin(message.from_user.id):
-        await message.answer("🚫 Нет доступа.")
+@router.message(Command("admin_grant"))
+async def admin_grant_access(message: Message, session: AsyncSession):
+    """Дать доступ пользователю. /admin_grant USER_ID"""
+    # Только админы
+    if message.from_user.id not in settings.ADMIN_IDS:
+        await message.answer("❌ Только администратор")
         return
-    await message.answer(
-        "🛠 <b>Админ-панель</b>\n\n"
-        "/users — список пользователей\n"
-        "/logs — последние логи\n"
-        "/broadcast <i>текст</i> — рассылка всем",
-        parse_mode="HTML",
-    )
 
-
-@router.message(Command("users"))
-async def cmd_users(message: Message, session: AsyncSession):
-    if not is_admin(message.from_user.id):
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer(
+            "❌ Использование: /admin_grant USER_ID\n"
+            "Пример: /admin_grant 123456789"
+        )
         return
-    result = await session.execute(select(func.count(User.id)))
-    total = result.scalar()
-    result2 = await session.execute(select(func.count(User.id)).where(User.is_active == True))
-    active = result2.scalar()
-    await message.answer(
-        f"👥 <b>Пользователи</b>\n\nВсего: {total}\nАктивных: {active}",
-        parse_mode="HTML",
-    )
 
-
-@router.message(Command("logs"))
-async def cmd_logs(message: Message):
-    if not is_admin(message.from_user.id):
-        return
     try:
-        with open("logs/bot.log", "r", encoding="utf-8") as f:
-            lines = f.readlines()[-30:]
-        text = "".join(lines)[-3800:]
-        await message.answer(f"<pre>{text}</pre>", parse_mode="HTML")
-    except FileNotFoundError:
-        await message.answer("📭 Лог-файл не найден.")
-
-
-@router.message(Command("broadcast"))
-async def cmd_broadcast(message: Message, session: AsyncSession):
-    if not is_admin(message.from_user.id):
-        return
-    text = message.text.removeprefix("/broadcast").strip()
-    if not text:
-        await message.answer("Использование: /broadcast <текст>")
+        user_id = int(parts[1])
+    except ValueError:
+        await message.answer("❌ USER_ID должен быть числом")
         return
 
-    result = await session.execute(select(User).where(User.is_active == True))
+    repo = UserRepository(session)
+    user = await repo.grant_access(user_id)
+    await session.commit()
+
+    if user:
+        await message.answer(
+            f"✅ <b>Доступ выдан пользователю {user_id}</b>\n"
+            f"Имя: {user.full_name}\n"
+            f"Username: @{user.username or 'не указан'}"
+        )
+        logger.info(f"Admin {message.from_user.id} granted access to {user_id}")
+        
+        # Уведомляем пользователя
+        try:
+            from aiogram import Bot
+            from config.settings import settings
+            bot = Bot(token=settings.BOT_TOKEN)
+            await bot.send_message(
+                chat_id=user_id,
+                text=(
+                    "🎉 <b>ДОСТУП К БОТУ ВЫДАН!</b>\n\n"
+                    "Вы получили доступ к OLX Bot. Теперь вы можете:\n\n"
+                    "✅ Добавлять поисковые запросы\n"
+                    "✅ Получать уведомления о выгодных сделках\n"
+                    "✅ Отслеживать прибыль\n\n"
+                    "Используйте /start для начала работы."
+                ),
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.error(f"Could not notify user {user_id}: {e}")
+    else:
+        await message.answer(f"❌ Пользователь {user_id} не найден")
+
+
+@router.message(Command("admin_revoke"))
+async def admin_revoke_access(message: Message, session: AsyncSession):
+    """Отозвать доступ пользователя. /admin_revoke USER_ID"""
+    if message.from_user.id not in settings.ADMIN_IDS:
+        await message.answer("❌ Только администратор")
+        return
+
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer(
+            "❌ Использование: /admin_revoke USER_ID\n"
+            "Пример: /admin_revoke 123456789"
+        )
+        return
+
+    try:
+        user_id = int(parts[1])
+    except ValueError:
+        await message.answer("❌ USER_ID должен быть числом")
+        return
+
+    repo = UserRepository(session)
+    user = await repo.revoke_access(user_id, "Доступ отозван администратором")
+    await session.commit()
+
+    if user:
+        await message.answer(
+            f"🚫 <b>Доступ отозван у пользователя {user_id}</b>\n"
+            f"Имя: {user.full_name}"
+        )
+        logger.warning(f"Admin {message.from_user.id} revoked access from {user_id}")
+    else:
+        await message.answer(f"❌ Пользователь {user_id} не найден")
+
+
+@router.message(Command("admin_list"))
+async def admin_list_users(message: Message, session: AsyncSession):
+    """Список пользователей."""
+    if message.from_user.id not in settings.ADMIN_IDS:
+        await message.answer("❌ Только администратор")
+        return
+
+    repo = UserRepository(session)
+    query = select(User).order_by(User.created_at.desc()).limit(20)
+    result = await session.execute(query)
     users = result.scalars().all()
 
-    sent = 0
-    for user in users:
-        try:
-            await message.bot.send_message(user.id, text)
-            sent += 1
-        except Exception as e:
-            logger.warning(f"Broadcast failed for {user.id}: {e}")
+    if not users:
+        await message.answer("Нет пользователей в системе")
+        return
 
-    await message.answer(f"✅ Рассылка отправлена {sent}/{len(users)} пользователям.")
+    text = "<b>📋 Список пользователей:</b>\n\n"
+    for user in users:
+        status = "✅ АКТИВЕН" if user.is_active else "❌ БЕЗ ДОСТУПА"
+        text += f"ID: <code>{user.id}</code>\n{user.full_name} (@{user.username})\n{status}\n\n"
+
+    await message.answer(text, parse_mode="HTML")
